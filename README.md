@@ -77,21 +77,28 @@ output allocation time.
 
 | metric | mojo-empyrical | empyrical 0.5.5 | speedup |
 | --- | ---: | ---: | ---: |
-| simple_returns, 5M | 25.11 ms | 62.70 ms | 2.50x |
-| cum_returns, 5M | 39.32 ms | 65.21 ms | 1.66x |
-| max_drawdown, 5M | 11.59 ms | 198.43 ms | 17.12x |
-| Sharpe ratio, 5M | 38.79 ms | 140.95 ms | 3.63x |
-| Sortino ratio, 5M | 47.72 ms | 174.63 ms | 3.66x |
-| alpha_beta, 5M | 48.01 ms | 474.38 ms | 9.88x |
-| rolling Sharpe, 100k x 252 | 1.48 ms | 764.43 ms | 515.80x |
-| rolling alpha_beta, 100k x 252 | 135.80 ms | 2459.76 ms | 18.11x |
+| simple_returns, 5M | 17.36 ms | 35.04 ms | 2.02x |
+| cum_returns, 5M | 28.56 ms | 52.56 ms | 1.84x |
+| max_drawdown, 5M | 12.33 ms | 447.20 ms | 36.27x |
+| Sharpe ratio, 5M | 36.42 ms | 108.34 ms | 2.97x |
+| Sortino ratio, 5M | 44.21 ms | 885.47 ms | 20.03x |
+| alpha_beta, 5M | 36.87 ms | 2920.08 ms | 79.21x |
+| rolling Sharpe, 100k x 252 | 0.98 ms | 5482.09 ms | 5616.97x |
+| rolling alpha_beta, 100k x 252 | 112.46 ms | 24108.96 ms | 214.39x |
 
 Simple returns uses native-width float64 SIMD and parallelizes independent
-chunks for large inputs. Drawdown and factor metrics benefit
+chunks for large inputs. Large one-dimensional cumulative returns uses a
+four-chunk prefix scan followed by a SIMD-adjusted output pass; smaller inputs
+remain serial to avoid thread-launch overhead. Drawdown and factor metrics benefit
 from fused scans that avoid large intermediate NumPy arrays. Rolling Sharpe
 maintains the entering and leaving sum and squared sum in constant space;
 upstream evaluates a two-dimensional rolling view and creates large
 temporaries.
+
+No GPU path is provided. The targeted transform and prefix kernels perform far
+less than two floating-point operations per byte moved, while the rolling
+kernels already use constant-space updates and are strongly ahead on CPU. Their
+arithmetic intensity does not justify host/device transfer and launch overhead.
 
 ## How it works
 

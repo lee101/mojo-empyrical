@@ -1,10 +1,13 @@
 """Risk and performance kernels for the Python C ABI."""
 
+from max.algorithm import parallelize
 from std.math import abs, isnan, log1p, pow, sqrt
 from std.sys.info import simd_width_of
 
 comptime Ptr = Pointer[Float64, AnyOrigin[mut=True]]
 comptime W = simd_width_of[DType.float64]()
+comptime PARALLEL_THRESHOLD = 1_048_576
+comptime PARALLEL_WORKERS = 4
 
 
 def p(addr: Int) -> Ptr:
@@ -174,12 +177,63 @@ def simple_returns_range(
         i += 1
 
 
+def cumulative_local(values: Ptr, result: Ptr, start: Int, end: Int):
+    var wealth = 1.0
+    for i in range(start, end):
+        var value = values.unsafe_load(i)
+        if not isnan(value):
+            wealth *= 1.0 + value
+        result.unsafe_store(i, wealth)
+
+
+def cumulative_adjust(
+    result: Ptr,
+    start: Int,
+    end: Int,
+    multiplier: Float64,
+    starting_value: Float64,
+):
+    var i = start
+    var vector_end = end - (end - start) % W
+    if starting_value == 0.0:
+        while i < vector_end:
+            result.unsafe_store(
+                i, result.unsafe_load[width=W](i) * multiplier - 1.0
+            )
+            i += W
+        while i < end:
+            result.unsafe_store(
+                i, result.unsafe_load(i) * multiplier - 1.0
+            )
+            i += 1
+    else:
+        var scale = multiplier * starting_value
+        while i < vector_end:
+            result.unsafe_store(
+                i, result.unsafe_load[width=W](i) * scale
+            )
+            i += W
+        while i < end:
+            result.unsafe_store(i, result.unsafe_load(i) * scale)
+            i += 1
+
+
 @export("mep_simple_returns")
 def mep_simple_returns(src: Int, dst: Int, rows: Int, columns: Int) abi("C"):
     var values = p(src)
     var result = p(dst)
     var n = (rows - 1) * columns
-    simple_returns_range(values, result, columns, 0, n)
+
+    @__parameter
+    def process(worker: Int):
+        var start = worker * n // PARALLEL_WORKERS
+        var end = (worker + 1) * n // PARALLEL_WORKERS
+        simple_returns_range(values, result, columns, start, end)
+
+    if n >= PARALLEL_THRESHOLD:
+        parallelize[process](PARALLEL_WORKERS, PARALLEL_WORKERS)
+    else:
+        simple_returns_range(values, result, columns, 0, n)
 
 
 @export("mep_cum_returns")
@@ -188,6 +242,40 @@ def mep_cum_returns(
 ) abi("C"):
     var values = p(src)
     var result = p(dst)
+    if columns == 1 and rows >= PARALLEL_THRESHOLD:
+
+        @__parameter
+        def scan(worker: Int):
+            var start = worker * rows // PARALLEL_WORKERS
+            var end = (worker + 1) * rows // PARALLEL_WORKERS
+            cumulative_local(values, result, start, end)
+
+        parallelize[scan](PARALLEL_WORKERS, PARALLEL_WORKERS)
+        var multiplier1 = result.unsafe_load(rows // 4 - 1)
+        var multiplier2 = (
+            multiplier1 * result.unsafe_load(rows // 2 - 1)
+        )
+        var multiplier3 = (
+            multiplier2 * result.unsafe_load(3 * rows // 4 - 1)
+        )
+
+        @__parameter
+        def adjust(worker: Int):
+            var start = worker * rows // PARALLEL_WORKERS
+            var end = (worker + 1) * rows // PARALLEL_WORKERS
+            var multiplier = 1.0
+            if worker == 1:
+                multiplier = multiplier1
+            elif worker == 2:
+                multiplier = multiplier2
+            elif worker == 3:
+                multiplier = multiplier3
+            cumulative_adjust(
+                result, start, end, multiplier, starting_value
+            )
+
+        parallelize[adjust](PARALLEL_WORKERS, PARALLEL_WORKERS)
+        return
     for column in range(columns):
         var wealth = 1.0
         for row in range(rows):

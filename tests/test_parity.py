@@ -74,6 +74,17 @@ def test_cum_returns_matrix_parity():
     same(mojo.cum_returns(matrix), upstream.cum_returns(matrix))
 
 
+@pytest.mark.parametrize("size", [1_048_575, 1_048_579])
+@pytest.mark.parametrize("starting_value", [0, 100])
+def test_cum_returns_parallel_threshold_and_simd_tail(size, starting_value):
+    large_returns = np.full(size, 1.0e-7)
+    large_returns[::131_071] = np.nan
+    same(
+        mojo.cum_returns(large_returns, starting_value),
+        upstream.cum_returns(large_returns, starting_value),
+    )
+
+
 def test_cum_returns_pandas_labels():
     frame = pd.DataFrame(
         {"strategy": returns[:30], "benchmark": factor[:30]},
